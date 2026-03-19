@@ -12,7 +12,7 @@ export const CONFIG = {
     if (typeof window !== 'undefined') {
       return `${window.location.origin}/callback`;
     }
-    return 'http://127.0.0.1:5500/callback';
+    return 'https://bielznnx.vercel.app/';
   },
   UPDATE_INTERVAL: 30000,
   SPOTIFY_UPDATE_INTERVAL: 5000,

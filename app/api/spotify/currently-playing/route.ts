@@ -1,33 +1,81 @@
 import { NextResponse } from 'next/server';
 
+// app/api/spotify/currently-playing/route.ts
+// Usa refresh token fixo no servidor — sem OAuth no browser, funciona em qualquer PC.
+
+let cachedAccessToken: string | null = null;
+let tokenExpiresAt = 0;
+
+async function getAccessToken(): Promise<string | null> {
+  // Reutiliza token em cache enquanto válido (com 1 min de margem)
+  if (cachedAccessToken && tokenExpiresAt > Date.now() + 60_000) {
+    return cachedAccessToken;
+  }
+
+  const clientId = process.env.SPOTIFY_CLIENT_ID;
+  const refreshToken = process.env.SPOTIFY_REFRESH_TOKEN;
+
+  if (!clientId || !refreshToken) {
+    console.error('Faltando SPOTIFY_CLIENT_ID ou SPOTIFY_REFRESH_TOKEN nas env vars.');
+    return null;
+  }
+
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    client_id: clientId,
+  });
+
+  const res = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+    cache: 'no-store',
+  });
+
+  if (!res.ok) {
+    console.error('Falha ao renovar token do Spotify:', res.status);
+    return null;
+  }
+
+  const json = await res.json() as {
+    access_token: string;
+    expires_in: number;
+    refresh_token?: string;
+  };
+
+  cachedAccessToken = json.access_token;
+  tokenExpiresAt = Date.now() + json.expires_in * 1000;
+
+  return json.access_token;
+}
+
 type SpotifyData = {
   song: string;
   artist: string;
   album_art_url: string;
-  timestamps: {
-    start: number;
-    end: number;
-  };
+  timestamps: { start: number; end: number };
 };
 
-export async function GET(req: Request) {
-  const auth = req.headers.get('authorization') || '';
-  const token = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : null;
+export async function GET() {
+  const accessToken = await getAccessToken();
 
-  if (!token) {
-    return NextResponse.json({ error: 'Acesso negado: missing Bearer token.' }, { status: 401 });
+  if (!accessToken) {
+    return NextResponse.json(
+      { error: 'Não foi possível obter token do Spotify. Verifique as env vars.' },
+      { status: 500 }
+    );
   }
 
   const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${accessToken}`,
       'User-Agent': 'bio-site-nextjs',
     },
     cache: 'no-store',
   });
 
   if (res.status === 204) {
-    // Nenhuma música tocando agora.
     return new NextResponse(null, { status: 204 });
   }
 
@@ -37,24 +85,17 @@ export async function GET(req: Request) {
     let details = text;
     if (contentType.includes('application/json')) {
       try {
-        const json = JSON.parse(text) as { error?: { message?: string; status?: number } };
-        const msg = json?.error?.message;
-        if (msg) details = msg;
-      } catch {
-        // mantém `text`
-      }
+        const json = JSON.parse(text) as { error?: { message?: string } };
+        if (json?.error?.message) details = json.error.message;
+      } catch { /* mantém text */ }
     }
     return NextResponse.json(
-      {
-        error:
-          `Spotify currently-playing falhou (HTTP ${res.status}). ${details}`.trim() ||
-          `Spotify currently-playing falhou (HTTP ${res.status}).`,
-      },
+      { error: `Spotify currently-playing falhou (HTTP ${res.status}). ${details}`.trim() },
       { status: res.status }
     );
   }
 
-  const json = (await res.json()) as {
+  const json = await res.json() as {
     is_playing: boolean;
     progress_ms: number;
     item: {
@@ -65,11 +106,8 @@ export async function GET(req: Request) {
     };
   };
 
-  const durationMs = json.item.duration_ms;
-  const progressMs = json.progress_ms;
-
-  const start = Date.now() - progressMs;
-  const end = start + durationMs;
+  const start = Date.now() - json.progress_ms;
+  const end = start + json.item.duration_ms;
 
   const data: SpotifyData = {
     song: json.item.name,
@@ -80,4 +118,3 @@ export async function GET(req: Request) {
 
   return NextResponse.json(data);
 }
-

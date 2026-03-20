@@ -1,45 +1,61 @@
 import { NextResponse } from 'next/server';
 
-export async function GET(req: Request) {
-  const auth = req.headers.get('authorization') || '';
-  const token = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : null;
+// app/api/auth/discord/me/route.ts
+// Puxa o perfil fixo do dono do site via bot token — sem OAuth, funciona em qualquer PC.
 
-  if (!token) {
-    return NextResponse.json({ error: 'Acesso negado: missing Bearer token.' }, { status: 401 });
+export async function GET() {
+  const botToken = process.env.DISCORD_BOT_TOKEN;
+  const userId = process.env.DISCORD_USER_ID;
+
+  if (!botToken || !userId) {
+    return NextResponse.json(
+      { error: 'Faltando DISCORD_BOT_TOKEN ou DISCORD_USER_ID nas env vars.' },
+      { status: 500 }
+    );
   }
 
-  const meRes = await fetch('https://discord.com/api/v10/users/@me', {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'User-Agent': 'bio-site-nextjs',
-    },
-  });
+  try {
+    const res = await fetch(`https://discord.com/api/v10/users/${userId}`, {
+      headers: {
+        Authorization: `Bot ${botToken}`,
+        'User-Agent': 'bio-site-nextjs',
+      },
+      cache: 'no-store',
+    });
 
-  if (!meRes.ok) {
-    return NextResponse.json({ error: `Discord /me falhou (HTTP ${meRes.status}).` }, { status: meRes.status });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      return NextResponse.json(
+        { error: `Discord API falhou (HTTP ${res.status}). ${text}`.trim() },
+        { status: res.status }
+      );
+    }
+
+    const data = await res.json() as {
+      id: string;
+      username: string;
+      global_name?: string | null;
+      avatar?: string | null;
+      discriminator?: string | null;
+      bio?: string | null;
+    };
+
+    return NextResponse.json({
+      discord_user: {
+        id: data.id,
+        username: data.username,
+        global_name: data.global_name ?? undefined,
+        avatar: data.avatar ?? undefined,
+        discriminator: data.discriminator ?? '0',
+        bio: data.bio ?? undefined,
+      },
+      discord_status: 'online',
+      activities: [],
+    });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Erro desconhecido.' },
+      { status: 500 }
+    );
   }
-
-  const me = (await meRes.json()) as {
-    id: string;
-    username: string;
-    global_name?: string | null;
-    avatar?: string | null;
-    discriminator?: string;
-    bio?: string;
-  };
-
-  return NextResponse.json({
-    discord_user: {
-      id: me.id,
-      username: me.username,
-      global_name: me.global_name ?? undefined,
-      avatar: me.avatar ?? undefined,
-      discriminator: me.discriminator ?? '0',
-      bio: me.bio ?? undefined,
-    },
-    // OAuth não entrega presença, então mantemos um status “conectado” neutro.
-    discord_status: 'online',
-    activities: [],
-  });
 }
-

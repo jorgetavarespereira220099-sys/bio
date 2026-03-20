@@ -1,72 +1,60 @@
 import { NextResponse } from 'next/server';
 
-import { CONFIG } from '@/lib/config';
+// app/api/auth/discord/token/route.ts
+// Troca o authorization code pelo access_token do Discord.
+// Feito server-side para não expor o DISCORD_CLIENT_SECRET no browser.
 
-type DiscordUserResponse = {
-  id: string;
-  username: string;
-  global_name?: string | null;
-  avatar?: string | null;
-  discriminator?: string | null;
-};
-
-export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const userId = searchParams.get('userId') || CONFIG.DISCORD_USER_ID;
-
-  const botToken = process.env.DISCORD_BOT_TOKEN;
-  if (!botToken) {
-    return NextResponse.json(
-      {
-        error:
-          'Faltando env var DISCORD_BOT_TOKEN. Crie um bot no Discord e configure o token no servidor.',
-      },
-      { status: 500 }
-    );
-  }
-
+export async function POST(request: Request) {
   try {
-    const res = await fetch(`https://discord.com/api/v10/users/${userId}`, {
-      headers: {
-        Authorization: `Bot ${botToken}`,
-        'User-Agent': 'bio-site-nextjs',
-      },
-      // Não cacheia, porque é para exibir status/perfil atual.
-      cache: 'no-store',
+    const body = await request.json() as { code: string; redirectUri: string };
+    const { code, redirectUri } = body;
+
+    if (!code || !redirectUri) {
+      return NextResponse.json(
+        { error: 'Faltando code ou redirectUri.' },
+        { status: 400 }
+      );
+    }
+
+    const clientId = process.env.DISCORD_OAUTH_CLIENT_ID;
+    const clientSecret = process.env.DISCORD_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+      return NextResponse.json(
+        { error: 'Faltando DISCORD_OAUTH_CLIENT_ID ou DISCORD_CLIENT_SECRET nas env vars.' },
+        { status: 500 }
+      );
+    }
+
+    const params = new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: redirectUri,
+    });
+
+    const res = await fetch('https://discord.com/api/oauth2/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
     });
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       return NextResponse.json(
-        { error: `Discord API falhou (HTTP ${res.status}). ${text}`.trim() },
+        { error: `Discord token exchange falhou (HTTP ${res.status}). ${text}`.trim() },
         { status: res.status }
       );
     }
 
-    const data = (await res.json()) as DiscordUserResponse;
+    const json = await res.json() as { access_token: string; token_type: string };
 
-    return NextResponse.json({
-      discord_user: {
-        id: data.id,
-        username: data.username,
-        global_name: data.global_name ?? undefined,
-        avatar: data.avatar ?? undefined,
-        // Alguns usuários não têm discriminator (contas modernas). O widget usa fallback disso.
-        discriminator: data.discriminator ?? '0',
-      },
-      // A API REST não devolve “presence”/atividades completas sem gateway/intents.
-      // Mantemos o contrato existente para não quebrar a UI.
-      discord_status: 'offline',
-      activities: [],
-    });
+    return NextResponse.json({ access_token: json.access_token });
   } catch (err) {
     return NextResponse.json(
-      {
-        error:
-          err instanceof Error ? err.message : 'Erro desconhecido ao buscar Discord.',
-      },
+      { error: err instanceof Error ? err.message : 'Erro desconhecido.' },
       { status: 500 }
     );
   }
 }
-
